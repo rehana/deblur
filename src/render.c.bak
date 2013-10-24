@@ -1,0 +1,179 @@
+/* GIMP Plug-in Template
+ * Copyright (C) 2000  Michael Natterer <mitch@gimp.org> (the "Author").
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Except as contained in this notice, the name of the Author of the
+ * Software shall not be used in advertising or otherwise to promote the
+ * sale, use or other dealings in this Software without prior written
+ * authorization from the Author.
+ */
+
+#include "config.h"
+
+#include <gtk/gtk.h>
+
+#include <libgimp/gimp.h>
+
+#include <complex.h>
+#include <fftw3.h>
+
+#include "main.h"
+#include "render.h"
+
+#include "plugin-intl.h"
+
+#include <string.h>
+
+/*  Public functions  */
+
+const int rect_size = 256;
+
+void
+render (gint32              image_ID,
+	GimpDrawable       *drawable,
+	PlugInVals         *vals,
+	PlugInImageVals    *image_vals,
+	PlugInDrawableVals *drawable_vals)
+{
+  double *fft_in, *fft_rev;
+  fftw_complex *fft_out, *fft_out2;
+  fftw_plan plan, reverse_plan;
+  int x1, y1, x2, y2, width, height;
+  int i, j, k, channel;
+  int num_channels, kernel_channels;
+  guchar *rect;
+  gint32 file;
+  GimpDrawable *drawable_k;
+
+  GimpPixelRgn rgn_in, rgn_out;
+
+  /* Get selection boundary */
+  gimp_drawable_mask_bounds (drawable->drawable_id,
+			     &x1, &y1,
+			     &x2, &y2);
+
+  width = x2 - x1;
+  height = y2 - y1;
+
+  num_channels = gimp_drawable_bpp(drawable->drawable_id);
+
+  rect = g_malloc(sizeof(guchar)* rect_size * rect_size * num_channels);
+
+  fft_in = fftw_malloc(sizeof(double) * rect_size * rect_size);
+  fft_rev = fftw_malloc(sizeof(double) * rect_size * rect_size);
+  fft_out = fftw_malloc(sizeof(fftw_complex) * rect_size * (rect_size/2 + 1));
+  fft_out2 = fftw_malloc(sizeof(fftw_complex) * rect_size * (rect_size/2 + 1));
+
+  plan = fftw_plan_dft_r2c_2d(rect_size,rect_size, fft_in, fft_out, FFTW_ESTIMATE);
+  reverse_plan = fftw_plan_dft_c2r_2d(rect_size, rect_size, fft_out, fft_rev, FFTW_ESTIMATE);
+
+  file = gimp_file_load(GIMP_RUN_NONINTERACTIVE, 
+			"/home/rehana/projects/kernel.xcf",
+			"/home/rehana/projects/kernel.xcf");
+
+  drawable_k = gimp_drawable_get(gimp_image_get_active_drawable(file));
+  gimp_pixel_rgn_init(&rgn_in, drawable_k,
+		      0, 0, 0, 0, FALSE, FALSE);
+
+  kernel_channels = gimp_drawable_bpp(drawable_k->drawable_id);
+  gimp_pixel_rgn_get_rect(&rgn_in, rect, 0, 0, 22, 16);
+  memset(fft_in, 0, sizeof(double) * rect_size * rect_size);
+
+  k = 0;
+  for(i = 0; i < 22*16; i++){
+    k += rect[i];
+  }
+  g_message("%d", k);
+  for(i = 0; i < 16; i++){
+    for(j=0; j<22; j++){
+      fft_in[i * rect_size + j] = ((double)rect[kernel_channels*(i * 22 + j)])/8000;
+    }
+  }
+
+  fftw_execute(plan);
+
+  memcpy(fft_out2, fft_out, sizeof(fftw_complex) * rect_size * (rect_size/2 + 1));
+
+  gimp_pixel_rgn_init(&rgn_in, drawable,
+		      x1, y1,
+		      x2-x1, y2-y1, 
+		      FALSE, FALSE);
+  gimp_pixel_rgn_init(&rgn_out, drawable, 
+		      x1, y1, 
+		      x2-x1, y2-y1,
+		      TRUE, TRUE);
+
+  //gimp_tile_cache_ntiles(4);
+ 
+  for(i = 0; i < height/rect_size; i++){
+    for(j = 0; j < width/rect_size; j++){
+      double *tmp = malloc(sizeof(double) * rect_size * rect_size);
+      int found = FALSE;
+      memcpy(tmp, fft_in, rect_size * rect_size);
+
+      gimp_pixel_rgn_get_rect(&rgn_in, rect, 
+			      j * rect_size, i * rect_size, 
+			      rect_size, rect_size);
+      
+     channel = 0;
+     for(channel = 0; channel < num_channels; channel++){
+       for(k = 0; k < rect_size * rect_size; k++){
+	 fft_in[k] = (double)rect[k*num_channels+channel];
+       }
+       
+       fftw_execute(plan);
+       for(k = 0; k< rect_size * (rect_size/2+1); k++){
+	 fft_out[k] = fft_out[k] / fft_out2[k];
+       }
+       fftw_execute(reverse_plan);
+       
+       for(k=0; k < rect_size*rect_size; k++){
+	 rect[k*num_channels+channel] = (guchar)(fft_rev[k]/(rect_size * rect_size));
+       }
+     }
+
+      fprintf(stderr, "\n");
+
+      gimp_pixel_rgn_set_rect(&rgn_out, rect, 
+			      j * rect_size, i * rect_size, 
+			      rect_size, rect_size);
+    }
+  }
+
+  /*  Update the modified region */
+  gimp_drawable_flush (drawable);
+  gimp_drawable_merge_shadow (drawable->drawable_id, TRUE);
+  gimp_drawable_update (drawable->drawable_id,
+			x1, y1,
+			x2 - x1, y2 - y1);
+
+  g_free(rect);
+
+  fftw_destroy_plan(plan);
+  fftw_destroy_plan(reverse_plan);
+  fftw_free(fft_in);
+  fftw_free(fft_rev);
+  fftw_free(fft_out);
+  fftw_free(fft_out2);
+  /*  g_message (_("This plug-in is just a dummy. "
+      "It has now finished doing nothing."));*/
+
+
+}
