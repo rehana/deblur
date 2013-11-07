@@ -43,36 +43,49 @@
 #include <stdlib.h>
 #include <math.h>
 
+/* We don't know the width at compile time, but most of the arrays we use
+   will be the same size as the image. */
+#define PIXEL(arr, x, y) (arr)[(y)*width + (x)]
+
 double *partial_x = 0;
 double *partial_y = 0;
 
 /*  Public functions  */
 
-/* Reduces noise in the image by bilateral filtering */
+/* Reduces noise in the image by bilateral filtering: Take a weighted average 
+   of nearby pixels, giving them less weight if they're farther away in space
+   _or_ in color. This helps preserve edges between differently-colored regions
+   while smoothing similarly-colored regions.
+*/
 void noise_filter(double *image, double *newimage, int width, int height){
   int i,j,x,y;
-  double acc, totalweight;
   for(y = 0; y < height; y++){
     for(x = 0; x < width; x++){
+      double acc, totalweight;
       acc = 0;
       totalweight = 0;
-      double pixel = image[y*width + x];
-      for(i = -2; i<=2; i++){
-	for(j = -2; j <=2; j++){
+      double pixel = PIXEL(image, x, y);
+      for(i=-2; i<=2; i++){
+	for(j=-2; j<=2; j++){
+	  double weight, e;
 	  if(y+i < 0 || x+j < 0 || y+i >= height || x+j >= width)
 	    continue;
-	  double e = (i*i + j*j)/25 + pow(image[(y+i)*width + (x+j)]-pixel, 2)/2500;
-	  double weight = exp(-e);
+	  e = (i*i + j*j)/25; // account for distance...
+	  e += pow(PIXEL(image, x+j, y+i)-pixel, 2)/2500; // and color
+	  weight = exp(-e);
 	  totalweight += weight;
-	  acc += image[(y+i)*width + (x+j)] * weight;
+	  acc += (PIXEL(image, x+j, y+i)) * weight;
 	}
       }
-      newimage[y*width+x] = acc/totalweight;
+      PIXEL(newimage, x, y) = acc/totalweight;
     }
   }
 }
 
-// Assumes partial_x and partial_y arrays are allocated
+/* Calculates the partial derivatives w.r.t. x and y at every point (which
+   can be combined to get the gradient)
+   Assumes globals partial_x and partial_y arrays are allocated
+*/
 void calculate_gradient(double *image, 
 			double *xresult, double *yresult,
 			int width, int height){
@@ -82,29 +95,35 @@ void calculate_gradient(double *image,
   for(y = 0; y < height; y++){
     for(x = 0; x < width; x++){
       if(x == width){
-	px = image[y*width + x] - image[y*width + x - 1];
+	/* At the edges, just use difference to adjacent pixel */
+	px = PIXEL(image, x, y) - PIXEL(image, x-1, y);
       }
       else if (x == 0){
-	px = image[y*width + x + 1] - image[y*width + x];
+	px = PIXEL(image, x+1, y) - PIXEL(image, x, y);
       }
       else{
-	px = (image[y*width + x + 1] - image[y*width + x - 1])/2;
+	/* Everywhere else, average difference to both adjacent pixels.
+	   The center pixel ends up not affecting this calculation. */
+	px = (PIXEL(image, x+1, y) - PIXEL(image, x-1, y))/2;
       }
+      /* ...then do the same in the y direction. */
       if(y == height){
-	py = image[y*width + x] - image[(y-1)*width + x];
+	py = PIXEL(image, x, y) - PIXEL(image, x, y-1);
       }
       else if (y == 0){
-	py = image[(y+1)*width + x] - image[y*width+x];
+	py = PIXEL(image, x, y+1) - PIXEL(image, x, y);
       }
       else{
-	py = (image[(y+1)*width+x] - image[(y-1)*width+x])/2;
+	py = (PIXEL(image, x, y+1) - PIXEL(image, x, y+1))/2;
       }
-      xresult[y*width + x] = px;
-      yresult[y*width + x] = py;
+      PIXEL(xresult, x, y) = px;
+      PIXEL(yresult, x, y) = py;
     }
   }
 }
 
+/* This is a filter that accentuates edges. It doesn't produce a very realistic
+   image, so it's only used as an intermediate step.*/
 void shock_filter(double *image, double *newimage, int width, int height){
   int x, y;
 
@@ -116,38 +135,39 @@ void shock_filter(double *image, double *newimage, int width, int height){
       double py;
       double L;
 
-      px = partial_x[y*width + x];
-      py = partial_y[y*width + x];
-      newimage[y*width + x] = sqrt(px*px + py*py)/2;
+      px = PIXEL(partial_x, x, y);
+      py = PIXEL(partial_y, x, y);
+      PIXEL(newimage, x, y) = sqrt(px*px + py*py)/2;
       if(x > 1 && y > 1){
-	L = partial_x[y * width + x] - partial_x[y*width + x - 1]+
-	  partial_y[y*width + x] - partial_y[(y-1)*width + x];
+	// Compute Laplacian
+	L = PIXEL(partial_x, x, y) - PIXEL(partial_x, x-1, y) +
+	  PIXEL(partial_y, x, y) - PIXEL(partial_y, x, y-2);
 	if(L > 0){
-	  newimage[y*width + x] *= -1;
+	  PIXEL(newimage, x, y) *= -1;
 	}
-	newimage[y*width + x] += image[y*width+x];
-	if(newimage[y*width+x] > 255)
-	  newimage[y*width+x] = 255;
-	if(newimage[y*width+x] < 0)
-	  newimage[y*width+x] = 0;
+	PIXEL(newimage, x, y) += PIXEL(image, x, y);
+	if(PIXEL(newimage, x, y) > 255)
+	  PIXEL(newimage, x, y) = 255;
+	if(PIXEL(newimage, x, y) < 0)
+	  PIXEL(newimage, x, y) = 0;
       }
     }
   }
   for(y = 0; y < height; y++){
     for(x = 0; x < 2; x++){
-      newimage[y*width+x] = image[y*width+x];
+      PIXEL(newimage,x,y) = PIXEL(image,x,y);
     }
   }
   for(x = 0; x < width; x++){
     for(y = 0; y < 2; y++){
-      newimage[y*width+x] = image[y*width+x];
+      PIXEL(newimage,x,y) = PIXEL(image,x,y);
     }
   }
 }
 
 /* This is the step the paper calls "truncating gradients". The idea
-   is that you zero out all the gradients smaller than a certain value.
-   TODO: do I need to reconstruct the image, or jsut use the gradient?
+   is that you only want to pay attention to the strongest edges, 
+   so you zero out the rest.
 */
 void flatten(double *image, double *newimage, int width, int height){
   int histogram_x[256];
@@ -158,8 +178,8 @@ void flatten(double *image, double *newimage, int width, int height){
   calculate_gradient(image, partial_x, partial_y, width, height);
   for(x=0; x < width; x++){
     for(y=0; y < height; y++){
-      int px = partial_x[y*width+x];
-      int py = partial_y[y*width+x];
+      int px = PIXEL(partial_x, x, y);
+      int py = PIXEL(partial_y, x, y);
       if(abs(px) > abs(py)/2 && abs(py) > abs(px)/2){
 	if(px * py > 0){
 	  histogram_xy[(px + py)/2]++;
@@ -185,7 +205,7 @@ void find_kernel(double *image, double *predicted, double *kernel,
 		 fftw_plan plan, fftw_plan reverse_plan;
 		 int width, int height)
 {
-  //TODO: compute various patials
+  //TODO: compute various partials
 
   // TODO: precompute (complex conjugate of fft(predicted)) * fft(predicted)
   // TODO: look up weights for various partials.
@@ -202,7 +222,7 @@ render (gint32              image_ID,
 	PlugInImageVals    *image_vals,
 	PlugInDrawableVals *drawable_vals)
 {
-  double *fft_in, *fft_rev;
+  double *scratch_image_1, *scratch_image_2;
   fftw_complex *fft_out, *fft_out2;
   fftw_plan plan, reverse_plan;
   int x1, y1, x2, y2, width, height;
@@ -226,13 +246,13 @@ render (gint32              image_ID,
 
   rect = g_malloc(sizeof(guchar)* width * height * num_channels);
 
-  fft_in = fftw_malloc(sizeof(double) * width * height);
-  fft_rev = fftw_malloc(sizeof(double) * width * height);
+  scratch_image_1 = fftw_malloc(sizeof(double) * width * height);
+  scratch_image_2 = fftw_malloc(sizeof(double) * width * height);
   fft_out = fftw_malloc(sizeof(fftw_complex) * width * (height/2 + 1));
   fft_out2 = fftw_malloc(sizeof(fftw_complex) * width * (height/2 + 1));
 
-  plan = fftw_plan_dft_r2c_2d(height, width, fft_in, fft_out, FFTW_ESTIMATE);
-  reverse_plan = fftw_plan_dft_c2r_2d(height, width, fft_out, fft_rev, FFTW_ESTIMATE);
+  plan = fftw_plan_dft_r2c_2d(height, width, scratch_image_1, fft_out, FFTW_ESTIMATE);
+  reverse_plan = fftw_plan_dft_c2r_2d(height, width, fft_out, scratch_image_2, FFTW_ESTIMATE);
   partial_x = malloc(sizeof(double) * width * height);
   partial_y = malloc(sizeof(double) * width * height);
 
@@ -246,7 +266,7 @@ render (gint32              image_ID,
 
   kernel_channels = gimp_drawable_bpp(drawable_k->drawable_id);
   gimp_pixel_rgn_get_rect(&rgn_in, rect, 0, 0, 22, 16);
-  memset(fft_in, 0, sizeof(double) * width * height);
+  memset(scratch_image_1, 0, sizeof(double) * width * height);
 
   /*  k = 0;
   for(i = 0; i < 22*16; i++){
@@ -255,9 +275,9 @@ render (gint32              image_ID,
   g_message("%d", k);
   for(i = 0; i < 16; i++){
     for(j=0; j<22; j++){
-      fft_in[i * width + j] = ((double)rect[kernel_channels*(i * 22 + j)])/8000;
+      scratch_image_1[i * width + j] = ((double)rect[kernel_channels*(i * 22 + j)])/8000;
     }
-    }
+  }
 
     fftw_execute(plan);
 
@@ -280,22 +300,24 @@ render (gint32              image_ID,
 
   for(channel = 0; channel < num_channels; channel++){
     for(k = 0; k < width * height; k++){
-      fft_in[k] = (double)rect[k*num_channels+channel];
+      scratch_image_1[k] = (double)rect[k*num_channels+channel];
     }
-    noise_filter(fft_in, fft_rev, width, height);
+    /* TODO: noise filter will be better using combined color distance, not
+     separate channels */
+    noise_filter(scratch_image_1, scratch_image_2, width, height);
     for(i = 0; i < 5; i++){
-      memcpy(fft_in, fft_rev, sizeof(double) * width * height);
-      shock_filter(fft_in, fft_rev, width, height);
+      memcpy(scratch_image_1, scratch_image_2, sizeof(double) * width * height);
+      shock_filter(scratch_image_1, scratch_image_2, width, height);
     }
     for(k=0; k < width * height; k++){
-      rect[k*num_channels+channel] = (guchar)(fft_rev[k]);
+      rect[k*num_channels+channel] = (guchar)(scratch_image_2[k]);
     }
   } 
 
   /* Deconvolution
   for(channel = 0; channel < num_channels; channel++){
     for(k = 0; k < width * height; k++){
-      fft_in[k] = (double)rect[k*num_channels+channel];
+      scratch_image_1[k] = (double)rect[k*num_channels+channel];
     }
     
     fftw_execute(plan);
@@ -305,7 +327,7 @@ render (gint32              image_ID,
     fftw_execute(reverse_plan);
     
     for(k=0; k < width * height; k++){
-      rect[k*num_channels+channel] = (guchar)(fft_rev[k]/(width * height));
+      rect[k*num_channels+channel] = (guchar)(scratch_image_2[k]/(width * height));
     }
     }*/
  
@@ -313,8 +335,8 @@ render (gint32              image_ID,
   /* (Debug)
   for(k = 0; k < width * height; k++){
     for(i = 0; i < num_channels; i++){
-      rect[k* num_channels+i] = fft_in[k]*8000;
-      if(fft_in[k] > 0)
+      rect[k* num_channels+i] = scratch_image_1[k]*8000;
+      if(scratch_image_1[k] > 0)
 	g_message("%d", k);
     }
     }*/
@@ -335,12 +357,10 @@ render (gint32              image_ID,
 
   fftw_destroy_plan(plan);
   fftw_destroy_plan(reverse_plan);
-  fftw_free(fft_in);
-  fftw_free(fft_rev);
+  fftw_free(scratch_image_1);
+  fftw_free(scratch_image_2);
   fftw_free(fft_out);
   fftw_free(fft_out2);
-  /*  g_message (_("This plug-in is just a dummy. "
-      "It has now finished doing nothing."));*/
 
   free(partial_x);
   free(partial_y);
