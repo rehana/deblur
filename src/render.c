@@ -58,21 +58,22 @@ double *partial_y = 0;
    while smoothing similarly-colored regions.
 */
 void noise_filter(double *image, double *newimage, int width, int height){
-  int i,j,x,y;
+  int i, j, x, y;
   for(y = 0; y < height; y++){
     for(x = 0; x < width; x++){
       double acc, totalweight;
       acc = 0;
       totalweight = 0;
       double pixel = PIXEL(image, x, y);
-      for(i=-2; i<=2; i++){
-	for(j=-2; j<=2; j++){
-	  double weight, e;
+
+      for(i = -2; i <= 2; i++){
+	for(j = -2; j <= 2; j++){
+	  double weight, dist;
 	  if(y+i < 0 || x+j < 0 || y+i >= height || x+j >= width)
 	    continue;
-	  e = (i*i + j*j)/25; // account for distance...
-	  e += pow(PIXEL(image, x+j, y+i)-pixel, 2)/2500; // and color
-	  weight = exp(-e);
+	  dist = (i*i + j*j)/25; // account for distance...
+	  dist += pow(PIXEL(image, x+j, y+i)-pixel, 2)/2500; // and color
+	  weight = exp(-dist);
 	  totalweight += weight;
 	  acc += (PIXEL(image, x+j, y+i)) * weight;
 	}
@@ -182,10 +183,10 @@ void flatten(double *image, double *newimage, int width, int height){
       int py = PIXEL(partial_y, x, y);
       if(abs(px) > abs(py)/2 && abs(py) > abs(px)/2){
 	if(px * py > 0){
-	  histogram_xy[(px + py)/2]++;
+	  histogram_xy[(px+py)/2]++;
 	}
 	else{
-	  histogram_x_minus_y[(py+py)/2]++;
+	  histogram_x_minus_y[(px+py)/2]++;
 	}
       }
       else if(abs(px) > abs(py)){
@@ -246,6 +247,7 @@ render (gint32              image_ID,
 
   rect = g_malloc(sizeof(guchar)* width * height * num_channels);
 
+  /* FFTW has its own malloc for performance reasons (affects alignment) */
   scratch_image_1 = fftw_malloc(sizeof(double) * width * height);
   scratch_image_2 = fftw_malloc(sizeof(double) * width * height);
   fft_out = fftw_malloc(sizeof(fftw_complex) * width * (height/2 + 1));
